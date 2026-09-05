@@ -1,14 +1,8 @@
-"""report.py — 최종 Markdown 리포트 생성/저장
-
-- build_report(...)  : 1차 JSON + 지역별 맛집 + errors → Markdown 문자열
-- save_report(...)   : results/{date}_travel_plan.md 로 저장
-
-LLM 본문 생성이 실패해도 로컬 폴백 템플릿으로 리포트를 완성한다.
-[보너스] 맛집은 지역(도시)별로 정리한다.
-"""
+"""최종 Markdown 여행 리포트 생성/저장."""
 
 import os
 
+import errors as E
 import llm_client
 
 
@@ -16,10 +10,13 @@ def _restaurants_md(restaurants: list) -> str:
     if not restaurants:
         return "- 데이터 없음 (장소 검색 결과 0건)"
     lines = []
-    for r in restaurants:
-        line = f"- **{r['name']}** ({r.get('category', '')})\n  - 주소: {r.get('address', '')}"
-        if r.get("url"):
-            line += f"\n  - 링크: {r['url']}"
+    for restaurant in restaurants:
+        name = restaurant.get("name", "이름 없음")
+        category = restaurant.get("category", "")
+        address = restaurant.get("address", "")
+        line = f"- **{name}** ({category})\n  - 주소: {address}"
+        if restaurant.get("url"):
+            line += f"\n  - 링크: {restaurant['url']}"
         lines.append(line)
     return "\n".join(lines)
 
@@ -28,24 +25,25 @@ def _errors_md(errors: list) -> str:
     if not errors:
         return "- 없음"
     return "\n".join(
-        f"- [{e['step']}] {e['type']}: {e['message']}" for e in errors
+        f"- [{e.get('step', '?')}] {e.get('type', '?')}: {e.get('message', '')}"
+        for e in errors
     )
 
 
-def _fallback_body(date: str, rec: dict, restaurants_by_city: dict) -> str:
-    """LLM 리포트 생성이 실패했을 때 사용하는 로컬 템플릿."""
-    events = "\n".join(f"- {ev}" for ev in rec.get("events", [])) or "- 정보 없음"
+def fallback_body(date: str, rec: dict, restaurants_by_city: dict) -> str:
+    """외부 API 없이 생성할 수 있는 결정적 Markdown 폴백 본문."""
+    events = "\n".join(f"- {event}" for event in rec.get("events", [])) or "- 정보 없음"
     cities = rec.get("recommended_cities", [])
-
-    rest_sections = []
-    for city in cities:
-        rest_sections.append(f"### {city}\n{_restaurants_md(restaurants_by_city.get(city, []))}")
+    rest_sections = [
+        f"### {city}\n{_restaurants_md(restaurants_by_city.get(city, []))}"
+        for city in cities
+    ]
     rest_md = "\n\n".join(rest_sections) or "- 데이터 없음"
 
     return f"""# {date} 국내 여행 추천 리포트
 
 ## 추천 지역
-{', '.join(cities)}
+{', '.join(cities) if cities else '정보 없음'}
 
 ## 추천 이유
 {rec.get('reason', '')}
@@ -66,14 +64,28 @@ def _fallback_body(date: str, rec: dict, restaurants_by_city: dict) -> str:
 """
 
 
-def build_report(date: str, rec: dict, restaurants_by_city: dict, errors: list) -> str:
-    """최종 리포트 Markdown 문자열을 생성한다."""
-    try:
-        body = llm_client.generate_report_body(date, rec, restaurants_by_city)
-    except Exception as e:
-        from errors import add_error
-        add_error(errors, "llm_report", "NETWORK_ERROR", f"리포트 생성 실패, 폴백 사용: {e}")
-        body = _fallback_body(date, rec, restaurants_by_city)
+def build_report(
+    date: str,
+    rec: dict,
+    restaurants_by_city: dict,
+    errors: list,
+    *,
+    use_llm: bool = True,
+) -> str:
+    """리포트를 생성한다. use_llm=False이면 외부 API 없이 폴백만 사용한다."""
+    if use_llm:
+        try:
+            body = llm_client.generate_report_body(date, rec, restaurants_by_city)
+        except Exception as exc:
+            E.add_error(
+                errors,
+                "llm_report",
+                E.LLM_REPORT_ERROR,
+                f"리포트 생성 실패, 폴백 사용: {exc}",
+            )
+            body = fallback_body(date, rec, restaurants_by_city)
+    else:
+        body = fallback_body(date, rec, restaurants_by_city)
 
     return f"{body.rstrip()}\n\n## 오류 요약(errors)\n{_errors_md(errors)}\n"
 
@@ -81,6 +93,6 @@ def build_report(date: str, rec: dict, restaurants_by_city: dict, errors: list) 
 def save_report(date: str, markdown: str, results_dir: str = "results") -> str:
     os.makedirs(results_dir, exist_ok=True)
     path = os.path.join(results_dir, f"{date}_travel_plan.md")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(markdown)
+    with open(path, "w", encoding="utf-8") as file:
+        file.write(markdown)
     return path
