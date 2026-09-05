@@ -1,0 +1,12 @@
+# API 키/로컬 환경 설정
+API.env
+.env
+
+# 실행 결과
+results/
+
+# 가상환경/파이썬 캐시
+venv/
+.venv/
+__pycache__/
+*.pyc
